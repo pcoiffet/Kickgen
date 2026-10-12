@@ -1,50 +1,51 @@
 # KickGen
 
-Describe a kick drum in plain text, get WAV files ready to drop into FL Studio.
+My own little kick plugin for FL Studio.
 
-> "short dry techno kick, 50 Hz" → `techno_kick_01.wav` (+ the JSON parameters that produced it)
+Honestly, I just wanted my own kick generator because I thought it would be
+fun to build. Set a few knobs, hit generate, get a batch of kicks with a bit
+of randomness, listen, keep the ones you like and drag them into FL Studio.
 
-An LLM translates the description into **synthesis parameters** validated by a
-schema; a deterministic DSP engine turns those parameters into audio. The LLM
-never generates audio directly, so every sound is reproducible and editable.
+And I wanted to plug an LLM into it, because why not. The idea is that you
+type something like "short dry techno kick around 50 Hz" and the model sets
+the knobs for you.
 
-## Status
+## How it works
 
-Early development. Only what is checked below works today.
+Every kick is synthesized from a small set of parameters: a sine whose pitch
+drops quickly, an amplitude envelope, a short noise click on top, some
+saturation and a low-pass filter. Those parameters are stored as JSON next to
+each WAV, so any kick can be re-rendered exactly or tweaked later.
 
-| Step | Scope | Status |
-| --- | --- | --- |
-| 1 | Synthesis engine + 24-bit WAV export + 5 hand-written presets | ✅ done |
-| 2 | CLI and replayable JSON parameters | ⏳ |
-| 3 | LLM layer: text → parameters, schema validation, retries | ⏳ |
-| 4 | Variations and iteration ("shorter", "more punch") | ⏳ |
-| 5 | Automatic evaluation on a reference set | ⏳ |
-| 6 | Web UI + audio demo | ⏳ |
+The language model never makes audio. It only fills in the parameters, which
+are checked against a schema (Pydantic, with min/max on every value) before
+anything is rendered. Same parameters, same sound, every time.
 
-## Architecture
+The plan is to have two engines reading the same JSON:
 
-```mermaid
-flowchart LR
-    T["Text prompt"] -.-> L["LLM layer<br/>(planned)"]
-    L -.->|JSON| V["KickParams<br/>Pydantic schema"]
-    P["Hand-written presets"] --> V
-    V --> S["Synthesis engine<br/>numpy / scipy"]
-    S --> W["WAV 44.1 kHz / 24-bit / mono"]
-    W --> F["FL Studio Browser folder"]
-```
+- **Python** (numpy/scipy) is the reference. It runs the tests, the
+  evaluation and the language model side.
+- **JavaScript** runs in the browser, so the generator can live on a plain
+  static web page. Tests check that it produces the same samples as the
+  Python engine.
 
-Signal chain of the engine (`src/kickgen/synth.py`):
+## Where it's at
 
-1. **Body**: sine oscillator with an exponential pitch sweep
-   `f(t) = end + (start - end) · exp(-t / τ)`. The phase uses the closed-form
-   integral of the sweep, so the tail lands exactly on the target pitch.
-2. **Amplitude envelope**: linear attack, hold, exponential decay.
-3. **Click**: band-passed white noise with a fast decay (seeded, deterministic).
-4. **Distortion**: `tanh` saturation or hard clipping.
-5. **Low-pass filter**: 4th-order Butterworth.
-6. **5 ms end fade** (no click at the end of the sample) and **peak normalisation**.
+Working today:
 
-## Quick start
+- the Python synthesis engine
+- WAV export at 44.1 kHz, 24-bit, mono (what FL Studio expects)
+- 5 hand-made presets: `techno_tight`, `808_long_F`, `hardstyle_distorted`,
+  `lofi_soft`, `house_punchy`
+- tests that check the sound itself (pitch of the tail measured with an FFT,
+  brightness of the click, effect of the saturation), run on every push
+
+Next up, in this order: random generator with locks on each knob, the
+JavaScript engine, the web page with knobs and a grid of kicks to audition,
+the text-to-knobs part with an LLM, edits like "shorter" or "one semitone
+down", and an evaluation on a set of 25 reference descriptions.
+
+## Try it
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -53,47 +54,28 @@ pytest
 python scripts/render_presets.py output/presets
 ```
 
-Then add `output/presets` to FL Studio's Browser (*Options → File settings →
-Browser extra search folders*) and drag a kick into the Channel Rack.
+In FL Studio, add `output/presets` under *Options > File settings > Browser
+extra search folders*, then drag a kick into the Channel Rack.
+
+Or from Python:
 
 ```python
 from kickgen import KickParams, export_kick
 
-params = KickParams(
+kick = KickParams(
     name="my_kick",
     duration_s=0.4,
     pitch={"start_hz": 300, "end_hz": 50, "decay_s": 0.03},
     distortion={"amount": 0.3},
 )
-export_kick(params, "my_kick.wav")
+export_kick(kick, "my_kick.wav")
 ```
 
-## Presets
+## Limits
 
-| Preset | Character |
-| --- | --- |
-| `techno_tight` | short, dry, settles at 50 Hz |
-| `808_long_F` | long sub tail tuned to F1 (43.65 Hz) |
-| `hardstyle_distorted` | hard-clipped, long tail |
-| `lofi_soft` | no click, low-passed at 1.2 kHz |
-| `house_punchy` | punchy, warm saturation |
-
-## Design choices
-
-- **Parameters, not audio, from the LLM.** Bounded, typed parameters
-  (`extra="forbid"`, min/max on every field) make LLM output checkable and
-  the audio 100 % reproducible.
-- **Nested schema** (`pitch`, `amp`, `click`, `distortion`, `filter`) mirrors
-  the signal chain, which keeps the JSON readable for both humans and models.
-- **Tests check the sound, not just the code**: the tail's fundamental is
-  measured by FFT, the click must raise the spectral centroid, distortion must
-  lower the crest factor.
-
-## Limitations
-
-- Mono, single-oscillator design: no layered tops or sampled transients yet.
-- Presets were designed from synthesis parameters and checked with audio
-  metrics; the listening test in FL Studio is still to be done.
+It's a single oscillator with a noise click, so don't expect layered,
+sample-based kicks. And the presets have only been checked with audio
+measurements so far, not with a proper listening session.
 
 ## License
 
